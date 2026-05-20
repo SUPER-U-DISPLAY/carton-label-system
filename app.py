@@ -1,32 +1,20 @@
 """
-箱唛生成系统 - 后端服务
+箱唛生成系统 - Gradio 版本（适配 Hugging Face Spaces）
 功能：上传Excel和Word模板，自动生成包含多页箱唛的Word文档
 核心：在ZIP层面操作docx，完整保留原始字体、图片、样式
 """
 
-from flask import Flask, render_template, request, jsonify, send_file
 import os
 import re
+import tempfile
 import pandas as pd
 import io
 import zipfile
+import gradio as gr
 
-import tempfile
-
-UPLOAD_DIR = os.path.join(tempfile.gettempdir(), 'carton_label_uploads')
-GENERATED_DIR = os.path.join(tempfile.gettempdir(), 'carton_label_generated')
-
-app = Flask(__name__)
-app.config['UPLOAD_FOLDER'] = UPLOAD_DIR
-app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024
-app.config['GENERATED_FOLDER'] = GENERATED_DIR
-
-os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
-os.makedirs(app.config['GENERATED_FOLDER'], exist_ok=True)
-
+# ==================== 核心逻辑（与Flask版完全一致） ====================
 
 def find_variables_in_template(doc_path):
-    """扫描Word模板，找出所有【X】格式的变量"""
     with zipfile.ZipFile(doc_path, 'r') as z:
         doc_xml = z.read('word/document.xml').decode('utf-8')
     variables = set(re.findall(r'【([^】]+)】', doc_xml))
@@ -34,8 +22,7 @@ def find_variables_in_template(doc_path):
 
 
 def read_excel_data(excel_path):
-    """读取Excel，返回DataFrame"""
-    df = pd.read_excel(excel_path, dtype=str)  # 全部读为字符串，保留原始显示
+    df = pd.read_excel(excel_path, dtype=str)
     df.columns = df.columns.str.strip().str.replace('\n', '')
     df = df.dropna(how='all')
     df = df.reset_index(drop=True)
@@ -43,14 +30,9 @@ def read_excel_data(excel_path):
 
 
 def format_excel_value(raw_value):
-    """
-    格式化Excel值：整数去掉小数点，保留原始显示
-    raw_value 是字符串（因为dtype=str）
-    """
     if pd.isna(raw_value) or str(raw_value).strip() == '':
         return ''
     val = str(raw_value).strip()
-    # 尝试判断是否为整数（如 "8.0" → "8"）
     try:
         num = float(val)
         if num == int(num):
@@ -61,7 +43,6 @@ def format_excel_value(raw_value):
 
 
 def replace_text_in_xml(xml_str, row_data, variables_mapping):
-    """在XML字符串中替换变量占位符"""
     for var_name, excel_col in variables_mapping.items():
         placeholder = f'【{var_name}】'
         if placeholder in xml_str:
@@ -71,38 +52,10 @@ def replace_text_in_xml(xml_str, row_data, variables_mapping):
     return xml_str
 
 
-def generate_single_docx(template_path, row_data, variables_mapping):
-    """
-    基于模板生成单个docx的bytes
-    完整复制模板ZIP中的所有文件，仅修改document.xml中的变量
-    """
-    with zipfile.ZipFile(template_path, 'r') as template_zip:
-        # 读取并替换 document.xml
-        doc_xml = template_zip.read('word/document.xml').decode('utf-8')
-        doc_xml = replace_text_in_xml(doc_xml, row_data, variables_mapping)
-
-        # 构建 output bytes
-        output_buf = io.BytesIO()
-        with zipfile.ZipFile(output_buf, 'w', zipfile.ZIP_DEFLATED) as out_zip:
-            for item in template_zip.infolist():
-                if item.filename == 'word/document.xml':
-                    out_zip.writestr(item, doc_xml.encode('utf-8'))
-                else:
-                    out_zip.writestr(item, template_zip.read(item.filename))
-        output_buf.seek(0)
-        return output_buf.read()
-
-
 def generate_merged_docx(template_path, df, variables_mapping):
-    """
-    生成合并的多页docx
-    在document.xml字符串层面复制body内容，添加分页符，替换变量
-    完整保留原始字体、图片、样式、关系引用
-    """
     with zipfile.ZipFile(template_path, 'r') as template_zip:
         doc_xml = template_zip.read('word/document.xml').decode('utf-8')
 
-        # 提取 <w:body>...</w:body> 内部内容
         body_match = re.search(r'(<w:body>)(.*?)(</w:body>)', doc_xml, re.DOTALL)
         if not body_match:
             body_match = re.search(r'(<[^>]*body>)(.*?)(</[^>]*body>)', doc_xml, re.DOTALL)
@@ -113,10 +66,8 @@ def generate_merged_docx(template_path, df, variables_mapping):
         body_content = body_match.group(2)
         body_close = body_match.group(3)
 
-        # 分页符XML
         page_break_xml = '<w:p><w:r><w:br w:type="page"/></w:r></w:p>'
 
-        # 拼接所有页面
         all_pages = []
         for idx, row in df.iterrows():
             page_xml = replace_text_in_xml(body_content, row, variables_mapping)
@@ -130,7 +81,6 @@ def generate_merged_docx(template_path, df, variables_mapping):
             body_open + new_body_content + body_close
         )
 
-        # 写入输出（完整复制模板所有文件，仅替换document.xml）
         output_buf = io.BytesIO()
         with zipfile.ZipFile(output_buf, 'w', zipfile.ZIP_DEFLATED) as out_zip:
             for item in template_zip.infolist():
@@ -142,152 +92,194 @@ def generate_merged_docx(template_path, df, variables_mapping):
         return output_buf.read()
 
 
-def generate_carton_labels(excel_path, template_path, variables_mapping):
-    """生成多页合并Word文档"""
-    df = read_excel_data(excel_path)
-    doc_bytes = generate_merged_docx(template_path, df, variables_mapping)
-
-    timestamp = pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')
-    output_filename = f'箱唛_{timestamp}.docx'
-    output_path = os.path.join(app.config['GENERATED_FOLDER'], output_filename)
-
-    with open(output_path, 'wb') as f:
-        f.write(doc_bytes)
-
-    return output_path, len(df)
-
-
-def generate_zip_download(excel_path, template_path, variables_mapping):
-    """生成ZIP压缩包（每个箱唛单独一个文件）"""
-    df = read_excel_data(excel_path)
-
-    timestamp = pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')
-    zip_filename = f'箱唛_全部_{timestamp}.zip'
-    zip_path = os.path.join(app.config['GENERATED_FOLDER'], zip_filename)
-
-    with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
+def generate_zip_download(template_path, df, variables_mapping):
+    output_buf = io.BytesIO()
+    with zipfile.ZipFile(output_buf, 'w', zipfile.ZIP_DEFLATED) as zf:
         for idx, row in df.iterrows():
-            doc_bytes = generate_single_docx(template_path, row, variables_mapping)
-            file_name = f'箱唛_{idx + 1}.docx'
-            zf.writestr(file_name, doc_bytes)
+            with zipfile.ZipFile(template_path, 'r') as template_zip:
+                doc_xml = template_zip.read('word/document.xml').decode('utf-8')
+                doc_xml = replace_text_in_xml(doc_xml, row, variables_mapping)
 
-    return zip_path, len(df)
+                doc_buf = io.BytesIO()
+                with zipfile.ZipFile(doc_buf, 'w', zipfile.ZIP_DEFLATED) as out_zip:
+                    for item in template_zip.infolist():
+                        if item.filename == 'word/document.xml':
+                            out_zip.writestr(item, doc_xml.encode('utf-8'))
+                        else:
+                            out_zip.writestr(item, template_zip.read(item.filename))
+                doc_buf.seek(0)
+                zf.writestr(f'箱唛_{idx + 1}.docx', doc_buf.read())
+    output_buf.seek(0)
+    return output_buf.read()
 
 
-# ==================== Flask 路由 ====================
+# ==================== Gradio 界面 ====================
 
-@app.route('/')
-def index():
-    return render_template('index.html')
+def analyze_files(excel_file, template_file):
+    """分析上传的文件，返回变量信息和列名"""
+    if excel_file is None or template_file is None:
+        return "❌ 请同时上传Excel和Word模板文件", None, None, gr.update(visible=False), gr.update(visible=False)
 
-
-@app.route('/api/analyze', methods=['POST'])
-def analyze():
-    """分析上传的文件"""
     try:
-        excel_file = request.files.get('excel')
-        template_file = request.files.get('template')
+        # 保存到临时文件
+        excel_path = os.path.join(tempfile.gettempdir(), 'carton_excel.xlsx')
+        template_path = os.path.join(tempfile.gettempdir(), 'carton_template.docx')
 
-        if not excel_file or not template_file:
-            return jsonify({'error': '请上传Excel和Word模板文件'}), 400
-
-        excel_path = os.path.join(app.config['UPLOAD_FOLDER'], 'data.xlsx')
-        template_path = os.path.join(app.config['UPLOAD_FOLDER'], 'template.docx')
-
-        excel_file.save(excel_path)
-        template_file.save(template_path)
+        with open(excel_path, 'wb') as f:
+            f.write(excel_file)
+        with open(template_path, 'wb') as f:
+            f.write(template_file)
 
         variables = find_variables_in_template(template_path)
-
         df = pd.read_excel(excel_path, dtype=str)
         df.columns = df.columns.str.strip().str.replace('\n', '')
         excel_columns = df.columns.tolist()
         row_count = len(df.dropna(how='all'))
 
-        return jsonify({
-            'variables': variables,
-            'excel_columns': excel_columns,
-            'row_count': row_count
-        })
+        info = f"✅ 分析完成！\n\n📋 模板变量: {variables}\n📊 Excel列名: {excel_columns}\n📄 数据行数: {row_count} 行\n\n请在下方为每个变量选择对应的Excel列，然后点击生成。"
+
+        # 构建变量映射的默认选择
+        default_choices = []
+        for var in variables:
+            if var in excel_columns:
+                default_choices.append(var)
+            else:
+                default_choices.append(None)
+
+        # 动态创建下拉框选项
+        dropdown_choices = gr.update(choices=["-- 请选择 --"] + excel_columns, value=default_choices[0] if default_choices else None)
+        dropdown2_choices = gr.update(choices=["-- 请选择 --"] + excel_columns, value=default_choices[1] if len(default_choices) > 1 else None)
+        dropdown3_choices = gr.update(choices=["-- 请选择 --"] + excel_columns, value=default_choices[2] if len(default_choices) > 2 else None)
+
+        return info, dropdown_choices, dropdown2_choices, dropdown3_choices, gr.update(visible=True), gr.update(visible=True)
 
     except Exception as e:
-        import traceback
-        traceback.print_exc()
-        return jsonify({'error': str(e)}), 500
+        return f"❌ 分析失败: {str(e)}", None, None, gr.update(visible=False), gr.update(visible=False)
 
 
-@app.route('/api/generate', methods=['POST'])
-def generate():
-    """生成箱唛文档（多页合并）"""
+def generate_merged(excel_file, template_file, col_a, col_b, col_c):
+    """生成多页合并Word文档"""
+    if excel_file is None or template_file is None:
+        return None, "❌ 请先上传文件"
+
     try:
-        data = request.get_json()
-        variables_mapping = data.get('variables_mapping', {})
+        excel_path = os.path.join(tempfile.gettempdir(), 'carton_excel.xlsx')
+        template_path = os.path.join(tempfile.gettempdir(), 'carton_template.docx')
 
-        excel_path = os.path.join(app.config['UPLOAD_FOLDER'], 'data.xlsx')
-        template_path = os.path.join(app.config['UPLOAD_FOLDER'], 'template.docx')
+        with open(excel_path, 'wb') as f:
+            f.write(excel_file)
+        with open(template_path, 'wb') as f:
+            f.write(template_file)
 
-        if not os.path.exists(excel_path) or not os.path.exists(template_path):
-            return jsonify({'error': '文件未找到，请重新上传'}), 400
+        variables = find_variables_in_template(template_path)
+        variables_mapping = {}
 
-        output_path, doc_count = generate_carton_labels(
-            excel_path, template_path, variables_mapping
-        )
+        # 根据变量数量构建映射
+        var_cols = [col_a, col_b, col_c]
+        for i, var in enumerate(variables):
+            if i < len(var_cols) and var_cols[i] and var_cols[i] != "-- 请选择 --":
+                variables_mapping[var] = var_cols[i]
 
-        return jsonify({
-            'success': True,
-            'message': f'成功生成 {doc_count} 页箱唛',
-            'download_url': f'/api/download/{os.path.basename(output_path)}'
-        })
+        if len(variables_mapping) < len(variables):
+            unmapped = [v for v in variables if v not in variables_mapping]
+            return None, f"❌ 请为以下变量选择Excel列: {unmapped}"
+
+        df = read_excel_data(excel_path)
+        doc_bytes = generate_merged_docx(template_path, df, variables_mapping)
+
+        return doc_bytes, f"✅ 成功生成 {len(df)} 页箱唛！点击下方文件下载。"
 
     except Exception as e:
         import traceback
         traceback.print_exc()
-        return jsonify({'error': str(e)}), 500
+        return None, f"❌ 生成失败: {str(e)}"
 
 
-@app.route('/api/download/<filename>')
-def download(filename):
-    """下载生成的文件"""
-    file_path = os.path.join(app.config['GENERATED_FOLDER'], filename)
-    if os.path.exists(file_path):
-        return send_file(file_path, as_attachment=True)
-    return jsonify({'error': '文件不存在'}), 404
+def generate_zip(excel_file, template_file, col_a, col_b, col_c):
+    """生成ZIP压缩包"""
+    if excel_file is None or template_file is None:
+        return None, "❌ 请先上传文件"
 
-
-@app.route('/api/generate-zip', methods=['POST'])
-def generate_zip():
-    """生成ZIP文件（逐个下载模式）"""
     try:
-        data = request.get_json()
-        variables_mapping = data.get('variables_mapping', {})
+        excel_path = os.path.join(tempfile.gettempdir(), 'carton_excel.xlsx')
+        template_path = os.path.join(tempfile.gettempdir(), 'carton_template.docx')
 
-        excel_path = os.path.join(app.config['UPLOAD_FOLDER'], 'data.xlsx')
-        template_path = os.path.join(app.config['UPLOAD_FOLDER'], 'template.docx')
+        with open(excel_path, 'wb') as f:
+            f.write(excel_file)
+        with open(template_path, 'wb') as f:
+            f.write(template_file)
 
-        if not os.path.exists(excel_path) or not os.path.exists(template_path):
-            return jsonify({'error': '文件未找到，请重新上传'}), 400
+        variables = find_variables_in_template(template_path)
+        variables_mapping = {}
 
-        zip_path, doc_count = generate_zip_download(
-            excel_path, template_path, variables_mapping
-        )
+        var_cols = [col_a, col_b, col_c]
+        for i, var in enumerate(variables):
+            if i < len(var_cols) and var_cols[i] and var_cols[i] != "-- 请选择 --":
+                variables_mapping[var] = var_cols[i]
 
-        return jsonify({
-            'success': True,
-            'message': f'成功生成 {doc_count} 个箱唛文档',
-            'download_url': f'/api/download/{os.path.basename(zip_path)}'
-        })
+        if len(variables_mapping) < len(variables):
+            unmapped = [v for v in variables if v not in variables_mapping]
+            return None, f"❌ 请为以下变量选择Excel列: {unmapped}"
+
+        df = read_excel_data(excel_path)
+        zip_bytes = generate_zip_download(template_path, df, variables_mapping)
+
+        return zip_bytes, f"✅ 成功生成 {len(df)} 个箱唛文档！点击下方文件下载。"
 
     except Exception as e:
         import traceback
         traceback.print_exc()
-        return jsonify({'error': str(e)}), 500
+        return None, f"❌ 生成失败: {str(e)}"
 
 
-if __name__ == '__main__':
-    print('=' * 50)
-    print('📦 箱唛生成系统')
-    print('=' * 50)
-    print('请在浏览器中打开: http://localhost:5000')
-    print('按 Ctrl+C 停止服务')
-    print('=' * 50)
-    app.run(debug=True, host='0.0.0.0', port=5000)
+# ==================== 构建界面 ====================
+
+with gr.Blocks(title="📦 箱唛生成系统") as demo:
+    gr.Markdown("# 📦 箱唛生成系统")
+    gr.Markdown("上传Excel数据和Word模板，自动生成批量箱唛文档。模板中的变量格式为【变量名】。")
+
+    with gr.Row():
+        with gr.Column():
+            excel_input = gr.File(label="📊 Excel 数据文件", file_types=[".xlsx", ".xls"])
+            template_input = gr.File(label="📄 Word 模板文件", file_types=[".docx"])
+            analyze_btn = gr.Button("🔍 分析文件", variant="secondary")
+
+    info_text = gr.Textbox(label="📋 分析结果", interactive=False, lines=6)
+
+    with gr.Row(visible=False) as mapping_row:
+        with gr.Column():
+            gr.Markdown("### 🔗 变量映射")
+            col_a = gr.Dropdown(label="变量 A → Excel列", choices=[], visible=False)
+            col_b = gr.Dropdown(label="变量 B → Excel列", choices=[], visible=False)
+            col_c = gr.Dropdown(label="变量 C → Excel列", choices=[], visible=False)
+
+    with gr.Row(visible=False) as generate_row:
+        with gr.Column():
+            merged_btn = gr.Button("📄 生成单个Word文档（多页合并）", variant="primary")
+            zip_btn = gr.Button("📦 生成ZIP压缩包（逐个文件）", variant="secondary")
+
+    status_text = gr.Textbox(label="状态", interactive=False, lines=2)
+    output_file = gr.File(label="⬇️ 下载生成的文件")
+
+    # 事件绑定
+    analyze_btn.click(
+        fn=analyze_files,
+        inputs=[excel_input, template_input],
+        outputs=[info_text, col_a, col_b, col_c, mapping_row, generate_row]
+    )
+
+    merged_btn.click(
+        fn=generate_merged,
+        inputs=[excel_input, template_input, col_a, col_b, col_c],
+        outputs=[output_file, status_text]
+    )
+
+    zip_btn.click(
+        fn=generate_zip,
+        inputs=[excel_input, template_input, col_a, col_b, col_c],
+        outputs=[output_file, status_text]
+    )
+
+
+if __name__ == "__main__":
+    demo.launch()
