@@ -1,0 +1,698 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>箱唛生成系统</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@300;400;500;700&display=swap');
+
+        :root {
+            --bg: #0f1117;
+            --card: #1a1d27;
+            --card-hover: #222532;
+            --border: #2a2d3a;
+            --accent: #6c5ce7;
+            --accent-light: #a29bfe;
+            --accent-glow: rgba(108, 92, 231, 0.3);
+            --success: #00b894;
+            --success-glow: rgba(0, 184, 148, 0.3);
+            --error: #ff6b6b;
+            --text: #e8e8e8;
+            --text-muted: #8b8fa3;
+            --text-dim: #555870;
+        }
+
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        body {
+            font-family: 'Noto Sans SC', sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            min-height: 100vh;
+            overflow-x: hidden;
+        }
+
+        /* 背景装饰 */
+        body::before {
+            content: '';
+            position: fixed;
+            top: -50%;
+            right: -30%;
+            width: 80vw;
+            height: 80vw;
+            background: radial-gradient(circle, rgba(108,92,231,0.06) 0%, transparent 60%);
+            pointer-events: none;
+            z-index: 0;
+        }
+        body::after {
+            content: '';
+            position: fixed;
+            bottom: -40%;
+            left: -20%;
+            width: 60vw;
+            height: 60vw;
+            background: radial-gradient(circle, rgba(0,184,148,0.04) 0%, transparent 60%);
+            pointer-events: none;
+            z-index: 0;
+        }
+
+        .container {
+            max-width: 720px;
+            margin: 0 auto;
+            padding: 60px 24px 80px;
+            position: relative;
+            z-index: 1;
+        }
+
+        /* 头部 */
+        .header {
+            text-align: center;
+            margin-bottom: 48px;
+        }
+        .header-icon {
+            width: 64px;
+            height: 64px;
+            background: linear-gradient(135deg, var(--accent), var(--accent-light));
+            border-radius: 16px;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 28px;
+            margin-bottom: 20px;
+            box-shadow: 0 8px 32px var(--accent-glow);
+        }
+        .header h1 {
+            font-size: 28px;
+            font-weight: 700;
+            letter-spacing: -0.5px;
+            margin-bottom: 8px;
+        }
+        .header p {
+            color: var(--text-muted);
+            font-size: 14px;
+            font-weight: 300;
+        }
+
+        /* 卡片 */
+        .card {
+            background: var(--card);
+            border: 1px solid var(--border);
+            border-radius: 16px;
+            padding: 28px;
+            margin-bottom: 20px;
+            transition: border-color 0.3s;
+        }
+        .card:hover { border-color: rgba(108,92,231,0.3); }
+
+        .card-title {
+            font-size: 13px;
+            font-weight: 500;
+            color: var(--text-muted);
+            text-transform: uppercase;
+            letter-spacing: 1.5px;
+            margin-bottom: 20px;
+        }
+
+        /* 上传区域 */
+        .upload-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 16px;
+        }
+        .upload-box {
+            border: 2px dashed var(--border);
+            border-radius: 12px;
+            padding: 32px 16px;
+            text-align: center;
+            cursor: pointer;
+            transition: all 0.3s;
+            position: relative;
+        }
+        .upload-box:hover {
+            border-color: var(--accent);
+            background: rgba(108,92,231,0.04);
+        }
+        .upload-box.has-file {
+            border-color: var(--success);
+            background: rgba(0,184,148,0.04);
+            border-style: solid;
+        }
+        .upload-box input { display: none; }
+        .upload-icon {
+            font-size: 32px;
+            margin-bottom: 12px;
+            opacity: 0.7;
+        }
+        .upload-label {
+            font-size: 13px;
+            color: var(--text-muted);
+            margin-bottom: 4px;
+        }
+        .upload-hint {
+            font-size: 11px;
+            color: var(--text-dim);
+        }
+        .upload-filename {
+            font-size: 12px;
+            color: var(--success);
+            margin-top: 10px;
+            word-break: break-all;
+            font-weight: 500;
+        }
+
+        /* 分析结果 */
+        .result-card {
+            display: none;
+        }
+        .result-card.show { display: block; }
+
+        .result-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr 1fr;
+            gap: 12px;
+            margin-bottom: 20px;
+        }
+        .result-item {
+            background: rgba(108,92,231,0.06);
+            border: 1px solid rgba(108,92,231,0.15);
+            border-radius: 10px;
+            padding: 14px;
+            text-align: center;
+        }
+        .result-value {
+            font-size: 20px;
+            font-weight: 700;
+            color: var(--accent-light);
+            margin-bottom: 4px;
+        }
+        .result-label {
+            font-size: 11px;
+            color: var(--text-dim);
+        }
+
+        .var-list {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            margin-bottom: 20px;
+        }
+        .var-tag {
+            background: rgba(108,92,231,0.12);
+            color: var(--accent-light);
+            padding: 6px 14px;
+            border-radius: 20px;
+            font-size: 13px;
+            font-weight: 500;
+        }
+
+        .mapping-section {
+            margin-top: 20px;
+            padding-top: 20px;
+            border-top: 1px solid var(--border);
+        }
+        .mapping-title {
+            font-size: 13px;
+            font-weight: 500;
+            color: var(--text-muted);
+            margin-bottom: 14px;
+        }
+        .mapping-row {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            margin-bottom: 10px;
+        }
+        .mapping-var {
+            background: rgba(108,92,231,0.12);
+            color: var(--accent-light);
+            padding: 8px 16px;
+            border-radius: 8px;
+            font-size: 13px;
+            font-weight: 500;
+            min-width: 80px;
+            text-align: center;
+        }
+        .mapping-arrow {
+            color: var(--text-dim);
+            font-size: 14px;
+        }
+        .mapping-select {
+            flex: 1;
+            background: var(--bg);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 8px 12px;
+            color: var(--text);
+            font-size: 13px;
+            cursor: pointer;
+            outline: none;
+            font-family: inherit;
+        }
+        .mapping-select:focus { border-color: var(--accent); }
+
+        /* 按钮 */
+        .btn-row {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 12px;
+            margin-top: 24px;
+        }
+        .btn {
+            padding: 14px 24px;
+            border: none;
+            border-radius: 10px;
+            font-size: 14px;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.3s;
+            font-family: inherit;
+        }
+        .btn-primary {
+            background: linear-gradient(135deg, var(--accent), var(--accent-light));
+            color: white;
+            box-shadow: 0 4px 20px var(--accent-glow);
+        }
+        .btn-primary:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 6px 28px var(--accent-glow);
+        }
+        .btn-primary:disabled {
+            opacity: 0.4;
+            cursor: not-allowed;
+            transform: none;
+        }
+        .btn-secondary {
+            background: var(--card-hover);
+            color: var(--text);
+            border: 1px solid var(--border);
+        }
+        .btn-secondary:hover {
+            border-color: var(--accent);
+            color: var(--accent-light);
+        }
+        .btn-secondary:disabled {
+            opacity: 0.4;
+            cursor: not-allowed;
+        }
+        .btn-analyze {
+            width: 100%;
+            padding: 14px;
+            background: var(--card-hover);
+            color: var(--text);
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            font-size: 14px;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.3s;
+            font-family: inherit;
+        }
+        .btn-analyze:hover {
+            border-color: var(--accent);
+            color: var(--accent-light);
+        }
+
+        /* 状态消息 */
+        .status {
+            display: none;
+            padding: 14px 18px;
+            border-radius: 10px;
+            font-size: 13px;
+            margin-top: 16px;
+        }
+        .status.show { display: flex; align-items: center; gap: 10px; }
+        .status.success {
+            background: rgba(0,184,148,0.08);
+            border: 1px solid rgba(0,184,148,0.2);
+            color: var(--success);
+        }
+        .status.error {
+            background: rgba(255,107,107,0.08);
+            border: 1px solid rgba(255,107,107,0.2);
+            color: var(--error);
+        }
+        .status.loading {
+            background: rgba(108,92,231,0.08);
+            border: 1px solid rgba(108,92,231,0.2);
+            color: var(--accent-light);
+        }
+        .spinner {
+            width: 16px;
+            height: 16px;
+            border: 2px solid transparent;
+            border-top-color: currentColor;
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+        }
+        @keyframes spin { to { transform: rotate(360deg); } }
+
+        /* 使用说明 */
+        .tips {
+            margin-top: 32px;
+            padding: 20px;
+            background: rgba(108,92,231,0.04);
+            border: 1px solid rgba(108,92,231,0.1);
+            border-radius: 12px;
+        }
+        .tips-title {
+            font-size: 12px;
+            font-weight: 500;
+            color: var(--text-dim);
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            margin-bottom: 10px;
+        }
+        .tips ul {
+            list-style: none;
+            padding: 0;
+        }
+        .tips li {
+            font-size: 13px;
+            color: var(--text-muted);
+            padding: 4px 0;
+            padding-left: 16px;
+            position: relative;
+        }
+        .tips li::before {
+            content: '→';
+            position: absolute;
+            left: 0;
+            color: var(--accent);
+        }
+
+        @media (max-width: 600px) {
+            .upload-grid, .btn-row, .result-grid {
+                grid-template-columns: 1fr;
+            }
+            .container { padding: 40px 16px 60px; }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <div class="header-icon">📦</div>
+            <h1>箱唛生成系统</h1>
+            <p>上传Excel数据和Word模板，自动生成批量箱唛文档</p>
+        </div>
+
+        <!-- 上传文件 -->
+        <div class="card">
+            <div class="card-title">第一步 · 上传文件</div>
+            <div class="upload-grid">
+                <div class="upload-box" id="excelBox" onclick="document.getElementById('excelInput').click()">
+                    <div class="upload-icon">📊</div>
+                    <div class="upload-label">Excel 数据文件</div>
+                    <div class="upload-hint">.xlsx / .xls</div>
+                    <input type="file" id="excelInput" accept=".xlsx,.xls">
+                    <div class="upload-filename" id="excelName" style="display:none"></div>
+                </div>
+                <div class="upload-box" id="templateBox" onclick="document.getElementById('templateInput').click()">
+                    <div class="upload-icon">📄</div>
+                    <div class="upload-label">Word 模板文件</div>
+                    <div class="upload-hint">.docx</div>
+                    <input type="file" id="templateInput" accept=".docx">
+                    <div class="upload-filename" id="templateName" style="display:none"></div>
+                </div>
+            </div>
+            <button class="btn-analyze" onclick="analyzeFiles()">🔍 分析文件</button>
+            <div class="status" id="analyzeStatus"></div>
+        </div>
+
+        <!-- 分析结果 & 生成 -->
+        <div class="card result-card" id="resultCard">
+            <div class="card-title">第二步 · 配置并生成</div>
+
+            <div class="result-grid">
+                <div class="result-item">
+                    <div class="result-value" id="varCount">0</div>
+                    <div class="result-label">模板变量</div>
+                </div>
+                <div class="result-item">
+                    <div class="result-value" id="colCount">0</div>
+                    <div class="result-label">Excel列数</div>
+                </div>
+                <div class="result-item">
+                    <div class="result-value" id="rowCount">0</div>
+                    <div class="result-label">数据行数</div>
+                </div>
+            </div>
+
+            <div class="var-list" id="varList"></div>
+
+            <div class="mapping-section" id="mappingSection">
+                <div class="mapping-title">变量映射</div>
+                <div id="mappingRows"></div>
+            </div>
+
+            <div class="btn-row">
+                <button class="btn btn-primary" id="btnMerged" onclick="generate('merged')" disabled>
+                    📄 生成Word文档<br><small style="font-weight:300;opacity:0.8">多页合并为一个文件</small>
+                </button>
+                <button class="btn btn-secondary" id="btnZip" onclick="generate('zip')" disabled>
+                    📦 生成ZIP压缩包<br><small style="font-weight:300;opacity:0.8">每个箱唛单独一个文件</small>
+                </button>
+            </div>
+
+            <div class="status" id="generateStatus"></div>
+        </div>
+
+        <!-- 使用说明 -->
+        <div class="tips">
+            <div class="tips-title">使用说明</div>
+            <ul>
+                <li>Word模板中的变量格式为【变量名】，例如：【A】【B】【C】</li>
+                <li>Excel表头列名与变量名相同时会自动匹配</li>
+                <li>生成后自动下载，保留原始字体、图片、样式</li>
+                <li>本工具完全在浏览器中运行，不上传任何数据到服务器</li>
+            </ul>
+        </div>
+    </div>
+
+    <script>
+        // 全局状态
+        let excelData = null;
+        let templateData = null;
+        let variables = [];
+        let excelColumns = [];
+        let excelRows = [];
+
+        // 文件上传处理
+        document.getElementById('excelInput').addEventListener('change', function(e) {
+            const file = e.target.files[0];
+            if (file) {
+                document.getElementById('excelName').textContent = '✅ ' + file.name;
+                document.getElementById('excelName').style.display = 'block';
+                document.getElementById('excelBox').classList.add('has-file');
+                const reader = new FileReader();
+                reader.onload = function(ev) { excelData = new Uint8Array(ev.target.result); };
+                reader.readAsArrayBuffer(file);
+            }
+        });
+
+        document.getElementById('templateInput').addEventListener('change', function(e) {
+            const file = e.target.files[0];
+            if (file) {
+                document.getElementById('templateName').textContent = '✅ ' + file.name;
+                document.getElementById('templateName').style.display = 'block';
+                document.getElementById('templateBox').classList.add('has-file');
+                const reader = new FileReader();
+                reader.onload = function(ev) { templateData = new Uint8Array(ev.target.result); };
+                reader.readAsArrayBuffer(file);
+            }
+        });
+
+        // 分析文件
+        async function analyzeFiles() {
+            if (!excelData || !templateData) {
+                showStatus('analyzeStatus', 'error', '请同时上传Excel和Word模板文件');
+                return;
+            }
+
+            showStatus('analyzeStatus', 'loading', '正在分析文件...');
+
+            try {
+                // 读取Excel
+                const wb = XLSX.read(excelData, { type: 'array' });
+                const ws = wb.Sheets[wb.SheetNames[0]];
+                const jsonData = XLSX.utils.sheet_to_json(ws, { header: 1 });
+                excelColumns = jsonData[0].map(c => String(c).trim().replace(/\n/g, ' '));
+                excelRows = jsonData.slice(1).filter(row => row.some(cell => cell !== undefined && cell !== ''));
+
+                // 读取Word模板中的变量
+                const zip = await JSZip.loadAsync(templateData);
+                const docXml = await zip.file('word/document.xml').async('string');
+                
+                // 提取所有<w:t>标签内容并拼接（处理Word拆分变量的问题）
+                const textContents = docXml.match(/<w:t[^>]*>([^<]*)<\/w:t>/g);
+                const fullText = textContents ? textContents.map(t => t.replace(/<[^>]+>/g, '')).join('') : '';
+                
+                // 匹配变量
+                const varMatches = fullText.match(/【[A-Za-z0-9_]+】/g);
+                variables = varMatches ? [...new Set(varMatches.map(v => v.replace(/【|】/g, '')))] : [];
+
+                // 更新UI
+                document.getElementById('varCount').textContent = variables.length;
+                document.getElementById('colCount').textContent = excelColumns.length;
+                document.getElementById('rowCount').textContent = excelRows.length;
+
+                // 变量标签
+                const varList = document.getElementById('varList');
+                varList.innerHTML = variables.map(v => `<span class="var-tag">【${v}】</span>`).join('');
+
+                // 映射下拉框
+                const mappingRows = document.getElementById('mappingRows');
+                mappingRows.innerHTML = variables.map(v => {
+                    const options = excelColumns.map(c =>
+                        `<option value="${c}" ${c === v ? 'selected' : ''}>${c}</option>`
+                    ).join('');
+                    return `
+                        <div class="mapping-row">
+                            <div class="mapping-var">【${v}】</div>
+                            <div class="mapping-arrow">→</div>
+                            <select class="mapping-select" data-var="${v}">
+                                <option value="">-- 选择Excel列 --</option>
+                                ${options}
+                            </select>
+                        </div>
+                    `;
+                }).join('');
+
+                // 显示结果卡片
+                document.getElementById('resultCard').classList.add('show');
+                document.getElementById('btnMerged').disabled = false;
+                document.getElementById('btnZip').disabled = false;
+
+                showStatus('analyzeStatus', 'success', `分析完成！发现 ${variables.length} 个变量，${excelRows.length} 行数据`);
+
+            } catch (err) {
+                showStatus('analyzeStatus', 'error', '分析失败: ' + err.message);
+                console.error(err);
+            }
+        }
+
+        // 格式化Excel值
+        function formatValue(val) {
+            if (val === undefined || val === null || String(val).trim() === '') return '';
+            let str = String(val).trim();
+            try {
+                let num = parseFloat(str);
+                if (!isNaN(num) && Number.isInteger(num)) return String(num);
+            } catch(e) {}
+            return str;
+        }
+
+        // 替换XML中的变量
+        function replaceVars(xmlStr, rowData, mapping) {
+            for (const [varName, colName] of Object.entries(mapping)) {
+                const colIdx = excelColumns.indexOf(colName);
+                const value = colIdx >= 0 ? formatValue(rowData[colIdx]) : '';
+                
+                // 处理Word中变量被XML标签拆分的情况
+                // 匹配 【 + 可能的XML标签 + varName + 可能的XML标签 + 】
+                const pattern = new RegExp(
+                    `【((?:<[^>]+>)*)${varName}((?:<[^>]+>)*)】`,
+                    'g'
+                );
+                xmlStr = xmlStr.replace(pattern, `${value}`);
+            }
+            return xmlStr;
+        }
+
+        // 生成文档
+        async function generate(mode) {
+            // 获取映射关系
+            const selects = document.querySelectorAll('.mapping-select');
+            const mapping = {};
+            selects.forEach(sel => {
+                if (sel.value) mapping[sel.dataset.var] = sel.value;
+            });
+
+            if (Object.keys(mapping).length < variables.length) {
+                const unmapped = variables.filter(v => !mapping[v]);
+                showStatus('generateStatus', 'error', `请为以下变量选择Excel列: ${unmapped.join(', ')}`);
+                return;
+            }
+
+            showStatus('generateStatus', 'loading', '正在生成文档...');
+
+            try {
+                const zip = await JSZip.loadAsync(templateData);
+                const docXml = await zip.file('word/document.xml').async('string');
+
+                // 提取body内容
+                const bodyMatch = docXml.match(/(<w:body>)([\s\S]*?)(<\/w:body>)/);
+                if (!bodyMatch) throw new Error('无法解析Word文档结构');
+
+                const bodyOpen = bodyMatch[1];
+                const bodyContent = bodyMatch[2];
+                const bodyClose = bodyMatch[3];
+                const pageBreak = '<w:p><w:r><w:br w:type="page"/></w:r></w:p>';
+
+                if (mode === 'merged') {
+                    // 多页合并
+                    let allPages = [];
+                    for (let i = 0; i < excelRows.length; i++) {
+                        let pageXml = replaceVars(bodyContent, excelRows[i], mapping);
+                        allPages.push(pageXml);
+                        if (i < excelRows.length - 1) allPages.push(pageBreak);
+                    }
+                    const newDocXml = docXml.replace(
+                        bodyOpen + bodyContent + bodyClose,
+                        bodyOpen + allPages.join('') + bodyClose
+                    );
+                    zip.file('word/document.xml', newDocXml);
+
+                    const blob = await zip.generateAsync({ type: 'blob', mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' });
+                    downloadBlob(blob, '箱唛_合并.docx');
+                    showStatus('generateStatus', 'success', `✅ 成功生成 ${excelRows.length} 页箱唛文档！`);
+
+                } else {
+                    // ZIP逐个文件
+                    const outputZip = new JSZip();
+                    for (let i = 0; i < excelRows.length; i++) {
+                        let newDocXml = replaceVars(docXml, excelRows[i], mapping);
+                        const pageZip = await JSZip.loadAsync(templateData);
+                        pageZip.file('word/document.xml', newDocXml);
+                        const pageBlob = await pageZip.generateAsync({ type: 'uint8array' });
+                        outputZip.file(`箱唛_${i + 1}.docx`, pageBlob);
+                    }
+                    const zipBlob = await outputZip.generateAsync({ type: 'blob' });
+                    downloadBlob(zipBlob, '箱唛_全部.zip');
+                    showStatus('generateStatus', 'success', `✅ 成功生成 ${excelRows.length} 个箱唛文档！`);
+                }
+
+            } catch (err) {
+                showStatus('generateStatus', 'error', '生成失败: ' + err.message);
+                console.error(err);
+            }
+        }
+
+        // 下载文件
+        function downloadBlob(blob, filename) {
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = filename;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+        }
+
+        // 显示状态
+        function showStatus(elementId, type, message) {
+            const el = document.getElementById(elementId);
+            el.className = 'status show ' + type;
+            if (type === 'loading') {
+                el.innerHTML = `<div class="spinner"></div>${message}`;
+            } else {
+                el.innerHTML = message;
+            }
+        }
+    </script>
+</body>
+</html>
